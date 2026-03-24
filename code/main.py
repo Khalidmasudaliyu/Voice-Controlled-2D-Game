@@ -4,6 +4,7 @@ from tkinter import messagebox, simpledialog
 import uuid
 import random
 import os
+from datetime import datetime
 
 from translations import t, set_language, current_language
 from utils.storage import (
@@ -28,6 +29,7 @@ from utils.database import (
     get_streak,
     get_sentences,
     get_multi_history,
+    save_multi_match,
     get_conn,
     init_db,
 )
@@ -87,6 +89,7 @@ class VoiceLearningApp(tk.Tk):
         self.current_player_id = None
         self.current_player_name = None
         self.session_id = None
+        self.session_start_time = None
         self.total_questions = 0
         self.correct_questions = 0
         self.player_single = None
@@ -99,9 +102,12 @@ class VoiceLearningApp(tk.Tk):
         self.round_index = 0
         self.tries_left = TRIES_PER_QUESTIONS
         self.current_answer = ""
+        self.current_sentence = None
+        self.current_hint = None
         self.current_listen_id = None
         self.session_scores = {}
         self.current_player_turn = 1
+        self.question_pool = []
         self._images = {}
 
         for n in (
@@ -345,7 +351,7 @@ class VoiceLearningApp(tk.Tk):
             "achievements", self.show_achievements, bg="#6fe7d6", imgname="trophy.png"
         ).grid(row=1, column=1, padx=10, pady=8)
         make_btn(
-            "view_scores",
+            "analytics",
             self.show_analytics_dashboard,
             bg="#ffd86b",
             imgname="reset.png",
@@ -362,12 +368,22 @@ class VoiceLearningApp(tk.Tk):
         self.show_main_menu()
 
     def enter_sentence_mode(self):
+        answer = simpledialog.askstring(
+            t("sentence_game"),
+            "Enter a sentence to practice (leave empty for random from library):",
+        )
         self.game_type = "sentence"
-        # Use existing session path, sentence is treated as an extra mode in generate_question
         self.single_mode = True
         self.player_single = self.current_player_name or "Guest"
         self.session_scores = {self.player_single: 0}
-        self.choose_game_mode()
+
+        sentence = (answer or "").strip()
+        if sentence:
+            self.custom_sentence = sentence
+        else:
+            self.custom_sentence = None
+
+        self.choose_difficulty("sentence")
 
     def enter_single_name(self):
         for w in self.container.winfo_children():
@@ -464,6 +480,14 @@ class VoiceLearningApp(tk.Tk):
             width=22,
             command=lambda: self.choose_difficulty("math"),
         ).grid(row=0, column=2, padx=10, pady=6)
+        tk.Button(
+            bf,
+            text=t("sentence_game"),
+            bg="#b2f7ef",
+            font=BTN_FONT,
+            width=22,
+            command=lambda: self.choose_difficulty("sentence"),
+        ).grid(row=1, column=1, padx=10, pady=6)
         tk.Button(f, text=t("back"), bg="#ffd86b", command=self.show_main_menu).pack(
             pady=14
         )
@@ -512,11 +536,33 @@ class VoiceLearningApp(tk.Tk):
         self.rounds_total = rounds_for(self.single_mode, difficulty)
         self.round_index = 0
         self.tries_left = TRIES_PER_QUESTIONS
+        self.total_questions = 0
+        self.correct_questions = 0
+        self.question_pool = []
+        self.session_start_time = datetime.now()
+        if self.game_type == "sentence" and getattr(self, "custom_sentence", None):
+            custom = self.custom_sentence.strip()
+            if custom:
+                self.question_pool = [
+                    {"sentence": custom, "answer": custom.lower(), "hint": ""}
+                ]
+
         if self.single_mode:
+            if self.player_single is None:
+                self.player_single = self.current_player_name or "Guest"
             self.session_scores = {self.player_single: 0}
         else:
             self.session_scores = {"player1": 0, "player2": 0}
             self.current_player_turn = 1
+
+        if self.current_player_id:
+            try:
+                self.session_id = start_session(
+                    self.current_player_id, self.game_type or "general", self.difficulty
+                )
+            except Exception:
+                self.session_id = None
+
         self.show_round_screen()
 
     def show_round_screen(self):
@@ -578,6 +624,18 @@ class VoiceLearningApp(tk.Tk):
             font=BTN_FONT,
             command=self.retry_round,
         ).pack(side="left", padx=8)
+        if self.game_type == "sentence":
+            self.hint_label = tk.Label(
+                frame, text="", font=("Segoe UI", 13), bg=BG, fg="#555"
+            )
+            self.hint_label.pack(pady=4)
+            tk.Button(
+                control_frame,
+                text=t("show_hint"),
+                bg="#ffd86b",
+                font=("Segoe UI", 12, "bold"),
+                command=self.show_hint,
+            ).pack(side="left", padx=8)
         tk.Button(
             control_frame,
             text=t("back"),
@@ -609,6 +667,12 @@ class VoiceLearningApp(tk.Tk):
         self.tries_label.config(text=t("tries_left").format(tries=self.tries_left))
         self.generate_question()
 
+    def show_hint(self):
+        if self.game_type == "sentence" and self.current_hint:
+            self.hint_label.config(text=t("hint").format(hint=self.current_hint))
+        else:
+            self.hint_label.config(text="")
+
     def retry_round(self):
         self.tries_left = TRIES_PER_QUESTIONS
         self.tries_label.config(text=t("tries_left").format(tries=self.tries_left))
@@ -621,15 +685,23 @@ class VoiceLearningApp(tk.Tk):
         gm = self.game_type
         d = self.difficulty
         if gm == "alphabet":
-            if d == "easy":
-                pool = list("abcde")
-            elif d == "medium":
-                pool = list("abcdefghijklm")
-            else:
-                pool = list("abcdefghijklmnopqrstuvwxyz")
-            chosen = random.choice(pool)
+            if not self.question_pool:
+                if d == "easy":
+                    self.question_pool = list("abcde")
+                elif d == "medium":
+                    self.question_pool = list("abcdefghijklm")
+                else:
+                    self.question_pool = list("abcdefghijklmnopqrstuvwxyz")
+                random.shuffle(self.question_pool)
+
+            if not self.question_pool:
+                self.question_pool = list("abcdefghijklmnopqrstuvwxyz")
+                random.shuffle(self.question_pool)
+
+            chosen = self.question_pool.pop()
             self.current_answer = chosen.lower()
             display = chosen.upper()
+            self.current_sentence = None
             if not self.single_mode:
                 playername = (
                     self.player1 if self.current_player_turn == 1 else self.player2
@@ -638,14 +710,22 @@ class VoiceLearningApp(tk.Tk):
                 speak(f"{playername}, {t('say_letter')} {display}")
             else:
                 self.prompt_label.config(text=f"{t('say_letter')} {display}")
-                speak(f"{t('say_letter')} ")
+                speak(f"{t('say_letter')} {display}")
         elif gm == "numbers":
-            if d == "easy":
-                n = random.randint(1, 5)
-            elif d == "medium":
-                n = random.randint(1, 10)
-            else:
-                n = random.randint(1, 20)
+            if not self.question_pool:
+                if d == "easy":
+                    self.question_pool = [str(i) for i in range(1, 6)]
+                elif d == "medium":
+                    self.question_pool = [str(i) for i in range(1, 11)]
+                else:
+                    self.question_pool = [str(i) for i in range(1, 21)]
+                random.shuffle(self.question_pool)
+
+            if not self.question_pool:
+                self.question_pool = [str(i) for i in range(1, 21)]
+                random.shuffle(self.question_pool)
+
+            n = int(self.question_pool.pop())
             self.current_answer = str(n)
             for i in range(n):
                 c = tk.Canvas(
@@ -653,6 +733,7 @@ class VoiceLearningApp(tk.Tk):
                 )
                 c.grid(row=i // 10, column=i % 10, padx=3, pady=3)
                 c.create_oval(4, 4, 32, 32, fill="#ffd86b", outline="#ffb703")
+            self.current_sentence = None
             if not self.single_mode:
                 playername = (
                     self.player1 if self.current_player_turn == 1 else self.player2
@@ -661,38 +742,82 @@ class VoiceLearningApp(tk.Tk):
                 speak(f"{playername}, {t('say_number')} {n}")
             else:
                 self.prompt_label.config(text=f"{t('say_number')} {n}")
-                speak(f"{t('say_number')} ")
+                speak(f"{t('say_number')} {n}")
+        elif gm == "sentence":
+            if not self.question_pool:
+                sent = get_sentences(self.lang, self.difficulty, limit=10)
+                if not sent:
+                    self.question_pool = [
+                        {
+                            "sentence": "Repeat after me: be kind and brave",
+                            "answer": "be kind and brave",
+                            "hint": "Short phrase",
+                        }
+                    ]
+                else:
+                    self.question_pool = [
+                        {
+                            "sentence": row["sentence"],
+                            "answer": row["answer"],
+                            "hint": row["hint"] or "",
+                        }
+                        for row in sent
+                    ]
+                random.shuffle(self.question_pool)
+
+            if not self.question_pool:
+                self.question_pool = [
+                    {
+                        "sentence": "Repeat after me: be kind",
+                        "answer": "be kind",
+                        "hint": "Short phrase",
+                    }
+                ]
+
+            q = self.question_pool.pop()
+            self.current_sentence = q["sentence"]
+            self.current_answer = q["answer"].lower()
+            self.current_hint = q.get("hint", "")
+            question_text = f"{t('say_sentence')} {self.current_sentence}"
+            self.prompt_label.config(text=question_text)
+            speak(question_text)
         else:  # math game
-            if d == "easy":
-                a, b = random.randint(1, 10), random.randint(1, 10)
+            if not self.question_pool:
+                if d == "easy":
+                    vals = [(x, y, "+") for x in range(1, 11) for y in range(1, 11)]
+                elif d == "medium":
+                    vals = [
+                        (x, y, op)
+                        for x in range(1, 21)
+                        for y in range(1, 21)
+                        for op in ["+", "-"]
+                    ]
+                else:
+                    vals = [
+                        (x, y, op)
+                        for x in range(1, 51)
+                        for y in range(1, 51)
+                        for op in ["+", "-", "*"]
+                    ]
+                random.shuffle(vals)
+                self.question_pool = vals
+
+            if not self.question_pool:
+                self.question_pool = [(1, 1, "+")]
+
+            a, b, op = self.question_pool.pop()
+            if op == "+":
                 self.current_answer = str(a + b)
                 qtext = f"{a} + {b} = ?"
                 speak_text = f"{t('say_sum')} {a} plus {b}"
-            elif d == "medium":
-                a, b = random.randint(1, 20), random.randint(1, 20)
-                if random.choice([True, False]):
-                    self.current_answer = str(a + b)
-                    qtext = f"{a} + {b} = ?"
-                    speak_text = f"{t('say_sum')} {a} plus {b}"
-                else:
-                    self.current_answer = str(a - b)
-                    qtext = f"{a} - {b} = ?"
-                    speak_text = f"{t('say_sum')} {a} minus {b}"
+            elif op == "-":
+                self.current_answer = str(a - b)
+                qtext = f"{a} - {b} = ?"
+                speak_text = f"{t('say_sum')} {a} minus {b}"
             else:
-                a, b = random.randint(1, 50), random.randint(1, 50)
-                op = random.choice(["+", "-", "*"])
-                if op == "+":
-                    self.current_answer = str(a + b)
-                    qtext = f"{a} + {b} = ?"
-                    speak_text = f"{t('say_sum')} {a} plus {b}"
-                elif op == "-":
-                    self.current_answer = str(a - b)
-                    qtext = f"{a} - {b} = ?"
-                    speak_text = f"{t('say_sum')} {a} minus {b}"
-                else:
-                    self.current_answer = str(a * b)
-                    qtext = f"{a} × {b} = ?"
-                    speak_text = f"{t('say_sum')} {a} times {b}"
+                self.current_answer = str(a * b)
+                qtext = f"{a} × {b} = ?"
+                speak_text = f"{t('say_sum')} {a} times {b}"
             if not self.single_mode:
                 playername = (
                     self.player1 if self.current_player_turn == 1 else self.player2
@@ -782,7 +907,12 @@ class VoiceLearningApp(tk.Tk):
             # Numbers / math: accept if the answer appears as a word token
             tokens = rt.replace(",", " ").split()
             ok = any(tok == ans for tok in tokens)
+        tries_used = TRIES_PER_QUESTIONS - self.tries_left + 1
+        question_text = self.current_sentence or self.prompt_label.cget("text")
+
         if ok:
+            self.total_questions += 1
+            self.correct_questions += 1
             if self.single_mode:
                 self.session_scores[self.player_single] = (
                     self.session_scores.get(self.player_single, 0) + 1
@@ -795,10 +925,36 @@ class VoiceLearningApp(tk.Tk):
                 self.feedback_label, text=t("correct").format(ans=self.current_answer)
             )
             speak(t("correct").format(ans=self.current_answer))
+            if self.session_id:
+                try:
+                    log_question(
+                        self.session_id,
+                        question_text,
+                        self.current_answer,
+                        heard_display,
+                        True,
+                        tries_used,
+                    )
+                except Exception:
+                    pass
             self.advance_after_answer(correct=True)
         else:
             self.tries_left -= 1
             heard_msg = f"  (heard: '{heard_display}')"
+            if self.tries_left == 0:
+                self.total_questions += 1
+            if self.session_id and self.tries_left == 0:
+                try:
+                    log_question(
+                        self.session_id,
+                        question_text,
+                        self.current_answer,
+                        heard_display,
+                        False,
+                        tries_used,
+                    )
+                except Exception:
+                    pass
             if self.tries_left > 0:
                 safe_config(self.feedback_label, text=t("incorrect_try") + heard_msg)
                 self.tries_label.config(
@@ -872,6 +1028,24 @@ class VoiceLearningApp(tk.Tk):
         ).pack(pady=6)
         stars = score // 5
         tk.Label(f, text="⭐" * stars, font=("Segoe UI", 28), bg=BG).pack(pady=6)
+        if self.session_id:
+            duration = int((datetime.now() - self.session_start_time).total_seconds())
+            try:
+                finish_session(
+                    self.session_id,
+                    score,
+                    self.rounds_total,
+                    self.correct_questions,
+                    duration,
+                )
+            except Exception:
+                pass
+
+            if self.current_player_id:
+                award_badge(self.current_player_id, "first_game")
+                if score >= self.rounds_total and self.rounds_total >= 10:
+                    award_badge(self.current_player_id, "perfect_10")
+
         tk.Button(
             f,
             text=t("play_again"),
@@ -914,6 +1088,35 @@ class VoiceLearningApp(tk.Tk):
             bg=BG,
         ).pack(pady=8)
         add_multi_match(self.player1, self.player2, p1score, p2score, winner)
+        if self.session_id and self.current_player_id:
+            duration = int((datetime.now() - self.session_start_time).total_seconds())
+            try:
+                finish_session(
+                    self.session_id,
+                    max(p1score, p2score),
+                    self.rounds_total * 2,
+                    self.correct_questions,
+                    duration,
+                )
+            except Exception:
+                pass
+
+        # persist into multi_matches table for durability
+        try:
+            save_multi_match(
+                self.player1,
+                self.player2,
+                p1score,
+                p2score,
+                winner,
+                self.game_type or "multiplayer",
+                self.difficulty,
+                p1_id=None,
+                p2_id=None,
+            )
+        except Exception:
+            pass
+
         tk.Button(
             f,
             text=t("play_again"),
@@ -987,6 +1190,97 @@ class VoiceLearningApp(tk.Tk):
         ).pack(side="left", padx=8)
         tk.Button(btnf, text=t("back"), bg="#6fe7d6", command=self.show_main_menu).pack(
             side="left", padx=8
+        )
+
+    def show_analytics_dashboard(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(fill="both", expand=True, padx=12, pady=12)
+
+        tk.Label(
+            f, text=t("analytics"), font=("Comic Sans MS", 20, "bold"), bg=BG
+        ).pack(pady=8)
+
+        if self.current_player_id:
+            stats = get_player_stats(self.current_player_id)
+            if stats and stats["total_sessions"]:
+                tk.Label(
+                    f, text=t("my_stats"), font=("Segoe UI", 16, "underline"), bg=BG
+                ).pack(pady=6)
+                info = (
+                    f"{t('total_games')}: {stats['total_sessions']}\n"
+                    f"{t('best_score')}: {stats['best_score'] or 0}\n"
+                    f"{t('avg_score')}: {stats['avg_score'] or 0}\n"
+                    f"{t('accuracy')}: {stats['accuracy'] or 0}%\n"
+                    f"{t('total_time')}: {int((stats['total_time_sec'] or 0) / 60)} {t('minutes')}\n"
+                    f"{t('streak')}: {get_streak(self.current_player_id)} {t('days')}"
+                )
+                tk.Label(
+                    f, text=info, font=("Segoe UI", 14), bg=BG, justify="left"
+                ).pack(pady=6)
+            else:
+                tk.Label(f, text=t("no_scores"), bg=BG).pack(pady=6)
+        else:
+            tk.Label(
+                f,
+                text="Sign in to see personal analytics",
+                font=("Segoe UI", 14),
+                bg=BG,
+            ).pack(pady=6)
+
+        tk.Label(
+            f, text=t("leaderboard"), font=("Segoe UI", 16, "underline"), bg=BG
+        ).pack(pady=8)
+        board = get_leaderboard(limit=10)
+        if board:
+            for row in board:
+                tk.Label(
+                    f,
+                    text=f"{row['name']}: {row['best']} pts, {row['games_played']} games, {row['avg_accuracy']}%",
+                    font=("Segoe UI", 12),
+                    bg=BG,
+                ).pack(anchor="w", padx=20)
+        else:
+            tk.Label(f, text=t("no_scores"), bg=BG).pack(pady=6)
+
+        tk.Button(f, text=t("back"), bg="#6fe7d6", command=self.show_main_menu).pack(
+            pady=14
+        )
+
+    def show_achievements(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(fill="both", expand=True, padx=12, pady=12)
+        tk.Label(
+            f, text=t("achievements"), font=("Comic Sans MS", 20, "bold"), bg=BG
+        ).pack(pady=8)
+
+        if not self.current_player_id:
+            tk.Label(
+                f,
+                text="Please log in to see your achievements.",
+                font=("Segoe UI", 14),
+                bg=BG,
+            ).pack(pady=10)
+        else:
+            badges = get_badges(self.current_player_id)
+            if badges:
+                for b in badges:
+                    tk.Label(
+                        f,
+                        text=f"{b['badge']} - {b['earned_at']}",
+                        font=("Segoe UI", 14),
+                        bg=BG,
+                    ).pack(anchor="w", padx=20, pady=2)
+            else:
+                tk.Label(f, text=t("no_badges"), font=("Segoe UI", 14), bg=BG).pack(
+                    pady=10
+                )
+
+        tk.Button(f, text=t("back"), bg="#6fe7d6", command=self.show_main_menu).pack(
+            pady=14
         )
 
     def confirm_delete_pair(self, match_key):
