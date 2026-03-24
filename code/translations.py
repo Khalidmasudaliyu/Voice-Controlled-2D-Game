@@ -72,7 +72,6 @@ _translations = {
         # ── Scores / leaderboard ─────────────────────────────────────────────
         "no_scores": "No scores yet — play a game!",
         "leaderboard": "🏆 Leaderboard",
-        "analytics": "📊 Analytics",
         "my_stats": "My Stats",
         "total_games": "Games played",
         "best_score": "Best score",
@@ -178,7 +177,6 @@ _translations = {
         # ── Scores / leaderboard ─────────────────────────────────────────────
         "no_scores": "Babu maki tukuna — buga wasa!",
         "leaderboard": "🏆 Jerin Mafi Kyau",
-        "analytics": "📊 Bayanin Ayyuka",
         "my_stats": "Bayananmu",
         "total_games": "Wasannin da aka buga",
         "best_score": "Mafi girman maki",
