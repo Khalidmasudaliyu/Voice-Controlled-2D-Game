@@ -1,35 +1,26 @@
 # main.py
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 import uuid
 import random
 import os
 
 from translations import t, set_language, current_language
-from utils.storage import (
-    load_progress,
-    add_single_score,
-    add_multi_match,
-    delete_pair,
-    reset_progress,
-)
 from utils.database import (
     create_player,
     get_player,
     verify_pin,
     update_last_login,
-    start_session,
-    finish_session,
-    log_question,
     get_player_stats,
     get_leaderboard,
     get_badges,
-    award_badge,
     get_streak,
     get_sentences,
-    get_multi_history,
-    get_conn,
     init_db,
+    BADGE_RULES,
+    legacy_load_progress as load_progress,
+    legacy_add_single_score as add_single_score,
+    save_multi_match,
 )
 from utils.voice import listen_async, ERR_NO_MIC, ERR_NO_SPEECH, ERR_NO_INTERNET
 from utils.tts import speak
@@ -363,11 +354,157 @@ class VoiceLearningApp(tk.Tk):
 
     def enter_sentence_mode(self):
         self.game_type = "sentence"
-        # Use existing session path, sentence is treated as an extra mode in generate_question
         self.single_mode = True
         self.player_single = self.current_player_name or "Guest"
         self.session_scores = {self.player_single: 0}
-        self.choose_game_mode()
+        self.choose_sentence_difficulty()
+
+    def choose_sentence_difficulty(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(expand=True)
+        tk.Label(f, text="💬 " + t("sentence_game"), font=("Comic Sans MS", 22, "bold"), bg=BG).pack(pady=12)
+        tk.Label(
+            f,
+            text="Sentences grow longer as difficulty increases.",
+            font=("Segoe UI", 13),
+            bg=BG, fg="#555"
+        ).pack(pady=(0, 12))
+        bf = tk.Frame(f, bg=BG)
+        bf.pack(pady=8)
+        examples = {
+            "easy":   "e.g.  I am ___",
+            "medium": "e.g.  I go to school every ___",
+            "hard":   "e.g.  The doctor told him to rest and drink plenty of ___",
+        }
+        colors = {"easy": "#b2f7ef", "medium": "#ffe4a3", "hard": "#ffb3c1"}
+        for col, diff in enumerate(["easy", "medium", "hard"]):
+            cell = tk.Frame(bf, bg=BG)
+            cell.grid(row=0, column=col, padx=12)
+            tk.Button(
+                cell, text=t(diff), bg=colors[diff], font=BTN_FONT, width=16,
+                command=lambda d=diff: self.start_sentence_game(d)
+            ).pack()
+            tk.Label(cell, text=examples[diff], font=("Segoe UI", 10), bg=BG, fg="#777").pack(pady=(4, 0))
+        tk.Button(f, text=t("back"), bg="#ffd86b", command=self.show_main_menu).pack(pady=14)
+
+    def start_sentence_game(self, difficulty):
+        self.difficulty = difficulty
+        lang = current_language()
+        rows = get_sentences(lang, difficulty, limit=30)
+        if not rows:
+            messagebox.showinfo("Info", "No sentences found. Try another difficulty.")
+            return
+        self._sentence_pool = [dict(r) for r in rows]
+        random.shuffle(self._sentence_pool)
+        self.rounds_total = min(len(self._sentence_pool), rounds_for(True, difficulty))
+        self.round_index = 0
+        self.tries_left = TRIES_PER_QUESTIONS
+        self.session_scores = {self.player_single: 0}
+        self.show_sentence_round()
+
+    def show_sentence_round(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        frame = tk.Frame(self.container, bg=BG)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text=f"💬 {t('sentence_game')} — {t(self.difficulty)}",
+            font=("Segoe UI", 18, "bold"), bg=BG
+        ).pack(pady=10)
+
+        self.round_label = tk.Label(
+            frame,
+            text=f"{t('question')} {self.round_index+1} / {self.rounds_total}",
+            font=("Segoe UI", 13), bg=BG
+        )
+        self.round_label.pack()
+
+        row = self._sentence_pool[self.round_index]
+        self.current_answer = row["answer"].lower().strip()
+        self._current_hint = row["hint"]
+
+        # Show the sentence with ___ highlighted
+        sentence_text = row["sentence"]
+        self.prompt_label = tk.Label(
+            frame, text=sentence_text,
+            font=("Segoe UI", 30, "bold"), bg=BG, fg="#222",
+            wraplength=900
+        )
+        self.prompt_label.pack(pady=18)
+
+        self.hint_label = tk.Label(frame, text="", font=("Segoe UI", 13, "italic"), bg=BG, fg="#888")
+        self.hint_label.pack()
+
+        self.tries_label = tk.Label(
+            frame, text=t("tries_left").format(tries=self.tries_left),
+            font=("Segoe UI", 13), bg=BG
+        )
+        self.tries_label.pack(pady=4)
+
+        self.feedback_label = tk.Label(frame, text="", font=("Segoe UI", 14), bg=BG)
+        self.feedback_label.pack(pady=4)
+
+        self.score_label = tk.Label(
+            frame,
+            text=f"{self.player_single}: {self.session_scores.get(self.player_single, 0)} pts",
+            font=("Segoe UI", 14, "bold"), bg=BG, fg="#333"
+        )
+        self.score_label.pack(pady=4)
+
+        ctrl = tk.Frame(frame, bg=BG)
+        ctrl.pack(pady=10)
+        mic_img = self._images.get("mic.png")
+        if mic_img:
+            self.speak_btn = tk.Button(
+                ctrl, text=t("speak"), image=mic_img, compound="left",
+                font=BTN_FONT, bg="#ffd86b", command=self.on_speak
+            )
+            self.speak_btn.image = mic_img
+        else:
+            self.speak_btn = tk.Button(ctrl, text=t("speak"), font=BTN_FONT, bg="#ffd86b", command=self.on_speak)
+        self.speak_btn.pack(side="left", padx=8)
+
+        tk.Button(
+            ctrl, text=t("show_hint"), bg="#9ad0f5", font=BTN_FONT,
+            command=lambda: self.hint_label.config(text=f"💡 {self._current_hint}")
+        ).pack(side="left", padx=8)
+        tk.Button(
+            ctrl, text=t("back"), bg="#ff9aa2", font=BTN_FONT,
+            command=self.show_main_menu
+        ).pack(side="left", padx=8)
+
+        speak(sentence_text.replace("___", "blank"))
+
+    def _next_sentence_question(self):
+        self.round_index += 1
+        if self.round_index >= self.rounds_total:
+            self._finish_sentence_game()
+        else:
+            self.tries_left = TRIES_PER_QUESTIONS
+            self.show_sentence_round()
+
+    def _finish_sentence_game(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        score = self.session_scores.get(self.player_single, 0)
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(expand=True)
+        tk.Label(f, text=t("game_over"), font=("Comic Sans MS", 22, "bold"), bg=BG).pack(pady=8)
+        tk.Label(
+            f,
+            text=t("round_finished_single").format(player=self.player_single, score=score),
+            font=("Segoe UI", 16), bg=BG
+        ).pack(pady=6)
+        tk.Label(f, text="⭐" * (score // 3), font=("Segoe UI", 28), bg=BG).pack(pady=6)
+        tk.Button(
+            f, text=t("play_again"), bg="#6fe7d6", font=BTN_FONT,
+            command=lambda: self.start_sentence_game(self.difficulty)
+        ).pack(pady=6)
+        tk.Button(f, text=t("back"), bg="#ff9aa2", font=BTN_FONT, command=self.show_main_menu).pack(pady=6)
 
     def enter_single_name(self):
         for w in self.container.winfo_children():
@@ -774,7 +911,10 @@ class VoiceLearningApp(tk.Tk):
             return
         ans = str(self.current_answer).lower()
         ok = False
-        if self.game_type == "alphabet":
+        if self.game_type == "sentence":
+            # Accept if the answer phrase appears anywhere in what was heard
+            ok = ans in rt or rt == ans
+        elif self.game_type == "alphabet":
             # Accept: exact match, or any token that IS the letter
             tokens = rt.replace(".", " ").replace(",", " ").split()
             ok = (rt == ans) or (ans in tokens)
@@ -801,9 +941,10 @@ class VoiceLearningApp(tk.Tk):
             heard_msg = f"  (heard: '{heard_display}')"
             if self.tries_left > 0:
                 safe_config(self.feedback_label, text=t("incorrect_try") + heard_msg)
-                self.tries_label.config(
-                    text=t("tries_left").format(tries=self.tries_left)
-                )
+                if hasattr(self, "tries_label") and self.tries_label.winfo_exists():
+                    self.tries_label.config(
+                        text=t("tries_left").format(tries=self.tries_left)
+                    )
                 speak(t("incorrect_try"))
             else:
                 safe_config(
@@ -817,7 +958,7 @@ class VoiceLearningApp(tk.Tk):
     def _refresh_score(self):
         if not hasattr(self, "score_label") or not self.score_label.winfo_exists():
             return
-        if self.single_mode:
+        if self.single_mode or self.game_type == "sentence":
             self.score_label.config(
                 text=f"{self.player_single}: {self.session_scores.get(self.player_single, 0)} pts"
             )
@@ -827,6 +968,10 @@ class VoiceLearningApp(tk.Tk):
             )
 
     def advance_after_answer(self, correct):
+        if self.game_type == "sentence":
+            add_single_score(self.player_single, self.session_scores.get(self.player_single, 0))
+            self.after(700, self._next_sentence_question)
+            return
         if self.single_mode:
             add_single_score(
                 self.player_single, self.session_scores[self.player_single]
@@ -913,7 +1058,7 @@ class VoiceLearningApp(tk.Tk):
             font=("Segoe UI", 18, "bold"),
             bg=BG,
         ).pack(pady=8)
-        add_multi_match(self.player1, self.player2, p1score, p2score, winner)
+        save_multi_match(self.player1, self.player2, p1score, p2score, winner, self.game_type, self.difficulty)
         tk.Button(
             f,
             text=t("play_again"),
@@ -991,6 +1136,7 @@ class VoiceLearningApp(tk.Tk):
 
     def confirm_delete_pair(self, match_key):
         if messagebox.askyesno(t("delete_match"), t("confirm_delete")):
+            from utils.storage import delete_pair
             ok = delete_pair(match_key)
             if ok:
                 messagebox.showinfo(t("delete_match"), t("pair_deleted"))
@@ -1000,9 +1146,87 @@ class VoiceLearningApp(tk.Tk):
 
     def reset_scores_confirm(self):
         if messagebox.askyesno(t("reset_scores"), t("confirm_reset")):
+            from utils.storage import reset_progress
             reset_progress()
             messagebox.showinfo(t("reset_scores"), t("scores_reset"))
             self.show_main_menu()
+
+    def show_achievements(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(fill="both", expand=True, padx=20, pady=12)
+        tk.Label(f, text=t("achievements"), font=("Comic Sans MS", 22, "bold"), bg=BG).pack(pady=10)
+
+        if not self.current_player_id:
+            tk.Label(f, text="Login to track achievements.", font=("Segoe UI", 14), bg=BG, fg="#888").pack(pady=20)
+        else:
+            badges = get_badges(self.current_player_id)
+            earned = {row["badge"] for row in badges}
+            grid = tk.Frame(f, bg=BG)
+            grid.pack(pady=8)
+            ICONS = {
+                "first_game": "🎮", "perfect_10": "💯", "streak_3": "🔥",
+                "streak_7": "⚡", "century": "💰", "speed_demon": "⚡", "bilingual": "🌍",
+            }
+            for i, (badge, desc) in enumerate(BADGE_RULES.items()):
+                got = badge in earned
+                card = tk.Frame(grid, bg="#e8fce8" if got else "#f0f0f0", bd=1, relief="solid", padx=12, pady=8)
+                card.grid(row=i // 3, column=i % 3, padx=10, pady=8, sticky="nsew")
+                icon = ICONS.get(badge, "🏅")
+                tk.Label(card, text=icon if got else "🔒", font=("Segoe UI", 28), bg=card["bg"]).pack()
+                tk.Label(card, text=t(f"badge_{badge}"), font=("Segoe UI", 11, "bold"), bg=card["bg"]).pack()
+                tk.Label(card, text=desc, font=("Segoe UI", 9), bg=card["bg"], fg="#555", wraplength=160).pack()
+                if got:
+                    earned_row = next(r for r in badges if r["badge"] == badge)
+                    tk.Label(card, text=earned_row["earned_at"][:10], font=("Segoe UI", 8), bg=card["bg"], fg="#888").pack()
+
+        tk.Button(f, text=t("back"), bg="#6fe7d6", font=BTN_FONT, command=self.show_main_menu).pack(pady=14)
+
+    def show_analytics_dashboard(self):
+        for w in self.container.winfo_children():
+            w.destroy()
+        f = tk.Frame(self.container, bg=BG)
+        f.pack(fill="both", expand=True, padx=20, pady=12)
+        tk.Label(f, text="📊 " + t("my_stats"), font=("Comic Sans MS", 22, "bold"), bg=BG).pack(pady=10)
+
+        if self.current_player_id:
+            stats = get_player_stats(self.current_player_id)
+            streak = get_streak(self.current_player_id)
+            stat_frame = tk.Frame(f, bg=BG)
+            stat_frame.pack(pady=6)
+            rows = [
+                (t("total_games"),   stats["total_sessions"] or 0),
+                (t("best_score"),    stats["best_score"] or 0),
+                (t("avg_score"),     stats["avg_score"] or 0),
+                (t("accuracy"),      f"{stats['accuracy'] or 0}%"),
+                (t("total_time"),    f"{(stats['total_time_sec'] or 0) // 60} {t('minutes')}"),
+                (t("streak"),        f"{streak} {t('days')}"),
+            ]
+            for i, (label, val) in enumerate(rows):
+                tk.Label(stat_frame, text=label, font=("Segoe UI", 13), bg=BG, anchor="e", width=22).grid(row=i, column=0, padx=8, pady=4, sticky="e")
+                tk.Label(stat_frame, text=str(val), font=("Segoe UI", 13, "bold"), bg=BG, anchor="w", width=14).grid(row=i, column=1, padx=8, pady=4, sticky="w")
+        else:
+            tk.Label(f, text="Login to see your stats.", font=("Segoe UI", 14), bg=BG, fg="#888").pack(pady=10)
+
+        # Leaderboard
+        tk.Label(f, text=t("leaderboard"), font=("Segoe UI", 16, "underline"), bg=BG).pack(pady=(14, 4))
+        lb_frame = tk.Frame(f, bg=BG)
+        lb_frame.pack()
+        headers = ["#", t("enter_name"), t("best_score"), t("total_games"), t("accuracy")]
+        for col, h in enumerate(headers):
+            tk.Label(lb_frame, text=h, font=("Segoe UI", 11, "bold"), bg="#ffd86b", width=14, relief="flat", padx=4).grid(row=0, column=col, padx=2, pady=2)
+        rows_lb = get_leaderboard(limit=8)
+        if rows_lb:
+            for rank, row in enumerate(rows_lb, 1):
+                vals = [rank, row["name"], row["best"], row["games_played"], f"{row['avg_accuracy']}%"]
+                bg = "#fffbe6" if rank % 2 == 0 else BG
+                for col, val in enumerate(vals):
+                    tk.Label(lb_frame, text=str(val), font=("Segoe UI", 11), bg=bg, width=14, padx=4).grid(row=rank, column=col, padx=2, pady=1)
+        else:
+            tk.Label(lb_frame, text=t("no_scores"), font=("Segoe UI", 12), bg=BG).grid(row=1, column=0, columnspan=5, pady=8)
+
+        tk.Button(f, text=t("back"), bg="#6fe7d6", font=BTN_FONT, command=self.show_main_menu).pack(pady=14)
 
 
 if __name__ == "__main__":

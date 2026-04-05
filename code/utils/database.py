@@ -84,45 +84,59 @@ def init_db():
         _seed_sentences(conn)
 
 def _seed_sentences(conn):
-    existing = conn.execute("SELECT COUNT(*) FROM sentences").fetchone()[0]
-    if existing > 0:
-        return
+    conn.execute("DELETE FROM sentences")
     sentences = [
-        # English easy
-        ("en","greetings","easy","Say hello to greet someone","hello","Start with H"),
-        ("en","greetings","easy","What do you say when you leave?","goodbye","Ends with bye"),
-        ("en","greetings","easy","Say thank you to show gratitude","thank you","Two words"),
-        ("en","greetings","easy","What do you say in the morning?","good morning","Two words"),
-        ("en","greetings","easy","How do you ask if someone is well?","how are you","Three words"),
-        # English medium
-        ("en","animals","medium","A dog says woof. A cat says what?","meow","Sounds like a cat"),
-        ("en","animals","medium","This animal has a long neck","giraffe","Tallest animal"),
-        ("en","animals","medium","This animal lives in water and has fins","fish","Lives in the sea"),
-        ("en","colors","medium","The sky is this color on a clear day","blue","Like the ocean"),
-        ("en","colors","medium","Grass and leaves are this color","green","Color of nature"),
-        ("en","colors","medium","The sun looks this color","yellow","Bright and warm"),
-        # English hard
-        ("en","sentences","hard","Finish: The quick brown fox jumps over the lazy","dog","Common typing test"),
-        ("en","sentences","hard","Finish: An apple a day keeps the doctor","away","Health proverb"),
-        ("en","sentences","hard","Finish: Actions speak louder than","words","Famous saying"),
-        ("en","sentences","hard","Finish: Every cloud has a silver","lining","Optimism saying"),
-        ("en","sentences","hard","Finish: Better late than","never","Common proverb"),
-        ("en","sentences","hard","Finish: Look before you","leap","Safety proverb"),
-        ("en","sentences","hard","Finish: Two wrongs don't make a","right","Ethics saying"),
-        # Hausa easy
-        ("ha","gaisuwa","easy","Faɗi kalmar gaisuwa da safe","sannu","Farko da S"),
-        ("ha","gaisuwa","easy","Yaya ake cewa lafiya lau?","lafiya lau","Kalma biyu"),
-        ("ha","gaisuwa","easy","Yaya ake cewa na gode?","na gode","Kalma biyu"),
-        ("ha","gaisuwa","easy","Yaya ake cewa sai anjima?","sai anjima","Kalma biyu"),
-        # Hausa medium
-        ("ha","dabbobi","medium","Wannan dabba tana ihu kukan kaza","kaza","Dabbar gida"),
-        ("ha","dabbobi","medium","Wannan dabba tana ba da madara","saniya","Dabbar gona"),
-        ("ha","launi","medium","Launi na sama a rana mai kyau","shuɗi","Launi na ruwa"),
-        ("ha","launi","medium","Launi na ciyawa da ganye","kore","Launi na daji"),
-        # Hausa hard
-        ("ha","karin magana","hard","Kammala: Haƙuri shi ne","maganin dukan cuta","Karin magana"),
-        ("ha","karin magana","hard","Kammala: Duk wanda ya yi gaskiya","Allah zai taimake shi","Karin magana"),
-        ("ha","karin magana","hard","Kammala: Ilimi shi ne","haske","Karin magana"),
+        # ── ENGLISH EASY: 2–4 word phrases, real daily life ──────────────────
+        ("en","daily life","easy","I am ___","here","Where are you?"),
+        ("en","daily life","easy","I am ___","ready","Are you prepared?"),
+        ("en","daily life","easy","I am ___","hungry","You need food"),
+        ("en","daily life","easy","I am ___","tired","You need rest"),
+        ("en","daily life","easy","I am ___","happy","You feel good"),
+        ("en","daily life","easy","I am ___","sorry","You made a mistake"),
+        ("en","daily life","easy","I am ___","fine","You are okay"),
+        ("en","daily life","easy","I am ___","late","You missed the time"),
+        ("en","daily life","easy","I am ___","lost","You don't know the way"),
+        ("en","daily life","easy","I am ___","done","You finished the task"),
+        # ── ENGLISH MEDIUM: 5–8 word sentences ───────────────────────────────
+        ("en","school","medium","I go to school every ___","day","How often?"),
+        ("en","school","medium","She reads a book every ___","night","When does she read?"),
+        ("en","school","medium","He drinks water when he is ___","thirsty","Why drink water?"),
+        ("en","school","medium","We play outside when the sun ___","shines","When do you play?"),
+        ("en","school","medium","I wash my hands before I ___","eat","Good hygiene habit"),
+        ("en","work","medium","She wakes up early to go to ___","work","Where does she go?"),
+        ("en","work","medium","He saves money to buy a ___","house","What does he want?"),
+        ("en","work","medium","They work hard so they can ___","succeed","What is the goal?"),
+        ("en","work","medium","I call my mother when I feel ___","lonely","Who do you call?"),
+        ("en","work","medium","She cooks dinner for her ___","family","Who does she cook for?"),
+        # ── ENGLISH HARD: full real-world sentences ───────────────────────────
+        ("en","real world","hard","If you want to pass the exam, you must study ___","hard","What must you do?"),
+        ("en","real world","hard","The doctor told him to rest and drink plenty of ___","water","Doctor's advice"),
+        ("en","real world","hard","She applied for the job because she needed the ___","money","Why apply?"),
+        ("en","real world","hard","The teacher asked the students to be quiet and ___","listen","Classroom rule"),
+        ("en","real world","hard","He missed the bus so he had to walk to ___","school","What happened next?"),
+        ("en","real world","hard","You should always tell the truth even when it is ___","hard","Honesty lesson"),
+        ("en","real world","hard","She saved enough money to pay her rent and buy ___","food","Basic needs"),
+        ("en","real world","hard","The farmer wakes up at dawn to water his ___","crops","Farm life"),
+        ("en","real world","hard","He studied medicine for six years to become a ___","doctor","Long journey"),
+        ("en","real world","hard","Without clean water, people cannot stay ___","healthy","Basic need"),
+        # ── HAUSA EASY ────────────────────────────────────────────────────────
+        ("ha","rayuwa","easy","Ina ___ yanzu","nan","Ina kake?"),
+        ("ha","rayuwa","easy","Ina ___ sosai","jin yunwa","Kana buƙatar abinci"),
+        ("ha","rayuwa","easy","Ina ___ yau","farin ciki","Yaya kake ji?"),
+        ("ha","rayuwa","easy","Ina ___ da wannan","nadama","Ka yi kuskure"),
+        ("ha","rayuwa","easy","Ina ___ yanzu","gajiya","Kana buƙatar hutawa"),
+        # ── HAUSA MEDIUM ──────────────────────────────────────────────────────
+        ("ha","makaranta","medium","Ina zuwa makaranta kowace ___","rana","Yaushe?"),
+        ("ha","makaranta","medium","Tana karanta littafi duk ___","dare","Yaushe take karatu?"),
+        ("ha","makaranta","medium","Muna wasa waje idan rana ta ___","haskaka","Yaushe kuke wasa?"),
+        ("ha","aiki","medium","Tana tashi da wuri don zuwa ___","aiki","Ina take tafi?"),
+        ("ha","aiki","medium","Suna aiki tuƙuru don su ___","ci nasara","Menene manufarsu?"),
+        # ── HAUSA HARD ────────────────────────────────────────────────────────
+        ("ha","duniya","hard","Idan kana son cin jarrabawa, dole ne ka yi ___","karatu","Me ya kamata ka yi?"),
+        ("ha","duniya","hard","Likita ya ce masa ya huta ya sha ruwa mai ___","yawa","Shawarar likita"),
+        ("ha","duniya","hard","Ta nemi aiki saboda tana buƙatar ___","kuɗi","Me ya sa ta nemi aiki?"),
+        ("ha","duniya","hard","Ba tare da ruwa mai tsabta ba, mutane ba za su iya zama ___","lafiya","Buƙatar rayuwa"),
+        ("ha","duniya","hard","Ya yi karatu shekara shida don ya zama ___","likita","Tafiya mai nisa"),
     ]
     conn.executemany(
         "INSERT INTO sentences (lang,category,difficulty,sentence,answer,hint) VALUES (?,?,?,?,?,?)",
